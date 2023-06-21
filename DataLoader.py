@@ -68,5 +68,5 @@ class TXTDataset(Dataset):
     def __init__(self, path):
         super().__init__(path)
         with open(path, 'r') as f:
-            self.sentences = f.readlines()
+            self.processed_sentences = f.readlines()
         # self.processed_sentences = self.preprocess(self.sentences)

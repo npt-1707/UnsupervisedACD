@@ -1,5 +1,6 @@
 import gensim.downloader as api
 from gensim.models import Word2Vec
+from gensim import models
 from gensim.corpora import Dictionary
 from gensim.similarities import SparseTermSimilarityMatrix, WordEmbeddingSimilarityIndex
 from gensim.models import TfidfModel
@@ -51,6 +52,8 @@ class UnsupervisedACD:
             "ambience",
             "anecdotes/miscellaneous",
         ]
+        # processor for preprocessing sentences
+        self.processor = Preprocessor()
 
         # load data
         print("Loading yelp dataset ...")
@@ -62,45 +65,41 @@ class UnsupervisedACD:
             "data/ABSA_TestData_PhaseB/Restaurants_Test_Data_phaseB.xml")
 
         # load models
-        model_path = "save/word2vec_model.bin"
         print("Loading word2vec model ...")
-        try:
-            self.w2v_model = Word2Vec.load(model_path)
-        except:
-            self.w2v_model = api.load("word2vec-google-news-300")
-            if not os.path.exists(model_path):
-                os.makedirs(model_path)
-            self.w2v_model.save(model_path)
+        if not os.path.exists("save"):
+            os.mkdir("save")
+
+        self.w2v_model = models.KeyedVectors.load_word2vec_format(
+            'save/yelp_W2V_300_orig.bin', binary=True)
+
         self.corpus = [
-            sentence.split() for sentence in self.semeval_train_dataset
+            sentence.split()
+            for sentence in self.semeval_train_dataset.processed_sentences
         ]
         self.dictionary = Dictionary(self.corpus)
         self.tfidf = TfidfModel(dictionary=self.dictionary)
-        self.similarity_index = WordEmbeddingSimilarityIndex(self.w2v_model.wv)
+        self.similarity_index = WordEmbeddingSimilarityIndex(self.w2v_model)
+        print("Building similarity matrix ...")
         self.similarity_matrix = SparseTermSimilarityMatrix(
             self.similarity_index, self.dictionary, self.tfidf)
-
-        # embedding yelp sentences
-        print("Embedding yelp sentences ...")
-        try:
-            with open("save/embedding_vetors.pkl", "rb") as f:
-                self.embedded = pickle.load(f)
-        except:
+        if os.path.exists("save/model.pkl"):
+            self.load()
+        else:
+            # embedding yelp sentences
+            print("Embedding yelp sentences ...")
             self.embedded = [
                 self.sentence_embedd_average(sentence)
-                for sentence in self.yelp_dataset.processed_sentences
+                for sentence in tqdm(self.yelp_dataset.processed_sentences)
             ]
-            with open("save/embedding_vetors.pkl", "wb") as f:
-                pickle.dump(self.embedded, f)
 
-        # processor for preprocessing sentences
-        self.processor = Preprocessor()
+            # cluster yelp sentences
+            self.k_mean_clustering_yelp()
 
-        # cluster yelp sentences
-        self.k_mean_clustering_yelp()
+            # get cluster similarity score with categories
+            self.get_cluster_category_score()
 
-        # get cluster similarity score with categories
-        self.get_cluster_category_score()
+            # save clusters
+            self.save()
 
         # test performance on test set
         self.evaluate_testset()
@@ -122,7 +121,8 @@ class UnsupervisedACD:
         Cluster embedded yelp sentences by k-means 
         '''
         print("Clustering ...")
-        self.kmeans = KMeans(n_clusters=k, random_state=0).fit(self.embedded)
+        self.kmeans = KMeans(n_clusters=k, max_iter=100,
+                             random_state=0).fit(self.embedded)
         self.cluster_indexes = self.kmeans.labels_
         self.centroids = self.kmeans.cluster_centers_
 
@@ -181,7 +181,10 @@ class UnsupervisedACD:
 
             self.cluster_category_similarity.append(cluster_scores)
 
-    def get_test_sentence_scores(self, sentence, alpha=0.5, is_processed=True):
+    def get_test_sentence_scores(self,
+                                 sentence,
+                                 alpha=0.5,
+                                 is_processed=False):
         '''
         Get the predicted scores of a sentence with categories
         '''
@@ -189,7 +192,6 @@ class UnsupervisedACD:
             sentence = self.processor.preprocess(sentence)
         embedded_sentence = self.sentence_embedd_average(sentence)
         pred_cluster = self.kmeans.predict(embedded_sentence)
-        print(pred_cluster)
         cluster_scores = self.cluster_category_similarity[pred_cluster]
         sentence_scores = self.get_sentence_category_scores(sentence)
         #nomalize cluster scores and sentence scores by np.linagl.norm
@@ -199,11 +201,16 @@ class UnsupervisedACD:
         return scores, sentence_scores, cluster_scores
 
     def evaluate_testset(self, alpha=0.5):
+        '''
+        Evaluate the performance of model on testset
+        '''
         print("Predicting ...")
         self.results = {"predict": [], "true": []}
         for idx in tqdm(range(len(self.semeval_test_dataset))):
             sentence = self.semeval_test_dataset.processed_sentences[idx]
-            scores, _, _ = self.get_test_sentence_scores(sentence, alpha)
+            scores, _, _ = self.get_test_sentence_scores(sentence,
+                                                         alpha=alpha,
+                                                         is_processed=False)
             labels = self.semeval_test_dataset.labels[idx]
             self.results["predict"].append(scores)
             self.results["true"].append(labels)
@@ -246,3 +253,18 @@ class UnsupervisedACD:
         if not labels:
             labels.append(self.categories[-1])
         print("Predicted labels:", labels)
+
+    def save(self):
+        state_dict = {
+            "kmeans": self.kmeans,
+            "cluster_score": self.cluster_category_similarity
+        }
+
+        with open("save/model.pkl", 'wb') as f:
+            pickle.dump(state_dict, f)
+
+    def load(self):
+        with open("save/model.pkl", 'rb') as f:
+            state_dict = pickle.load(f)
+        self.kmeans = state_dict["kmeans"]
+        self.cluster_category_similarity = state_dict["cluster_score"]
