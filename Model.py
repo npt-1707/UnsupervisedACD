@@ -1,209 +1,248 @@
+import gensim.downloader as api
+from gensim.models import Word2Vec
+from gensim.corpora import Dictionary
+from gensim.similarities import SparseTermSimilarityMatrix, WordEmbeddingSimilarityIndex
+from gensim.models import TfidfModel
+
 import numpy as np
-import xml.etree.ElementTree as ET
-from DataLoader import Dataset
+from tqdm import tqdm
+import pickle, os
+from sklearn.cluster import KMeans
+from sklearn.metrics import hamming_loss, precision_score, recall_score, f1_score
+
+from DataLoader import XMLDataset, TXTDataset
+from Preprocessing import Preprocessor
 
 
-class Unsupervised:
-    def __init__(self, data, embedding_model):
-        self.data = data
+def sigmoid(x, derivative=False):
+    return x * (1 - x) if derivative else 1 / (1 + np.exp(-x))
+
+
+class UnsupervisedACD:
+
+    def __init__(self):
+        print("Initializing ...")
         self.category_label_num = {
-            'service': 0,
-            'food': 1,
-            'price': 2,
-            'ambience': 3,
-            'anecdotes/miscellaneous': 4
+            "service": 0,
+            "food": 1,
+            "price": 2,
+            "ambience": 3,
+            "anecdotes/miscellaneous": 4,
         }
         self.category_num_label = {
-            0: 'service',
-            1: 'food',
-            2: 'price',
-            3: 'ambience',
-            4: 'anecdotes/miscellaneous'
+            0: "service",
+            1: "food",
+            2: "price",
+            3: "ambience",
+            4: "anecdotes/miscellaneous",
         }
         self.category_seed_words = {
-            'service': {'service', 'staff', 'friendly', 'attentive', 'manager'},
-            'food': {'food', 'delicious', 'menu', 'fresh', 'tasty'},
-            'price': {'price', 'cheap', 'expensive', 'money', 'affordable'},
-            'ambience': {'ambience', 'atmosphere', 'decor', 'romantic', 'loud'}
+            "service":
+            {"service", "staff", "friendly", "attentive", "manager"},
+            "food": {"food", "delicious", "menu", "fresh", "tasty"},
+            "price": {"price", "cheap", "expensive", "money", "affordable"},
+            "ambience":
+            {"ambience", "atmosphere", "decor", "romantic", "loud"},
         }
         self.categories = [
-            'service',
-            'food',
-            'price',
-            'ambience',
-            'anecdotes/miscellaneous'
+            "service",
+            "food",
+            "price",
+            "ambience",
+            "anecdotes/miscellaneous",
         ]
-        self.embedding_model_model = embedding_model
+
+        # load data
+        print("Loading yelp dataset ...")
+        self.yelp_dataset = TXTDataset("data/yelp_restaurant_review.txt")
+        print("Loading SemEval dataset ...")
+        self.semeval_train_dataset = XMLDataset(
+            "data/SemEval'14-ABSA-TrainData_v2/Restaurants_Train_v2.xml")
+        self.semeval_test_dataset = XMLDataset(
+            "data/ABSA_TestData_PhaseB/Restaurants_Test_Data_phaseB.xml")
+
+        # load models
+        model_path = "save/word2vec_model.bin"
+        print("Loading word2vec model ...")
+        try:
+            self.w2v_model = Word2Vec.load(model_path)
+        except:
+            self.w2v_model = api.load("word2vec-google-news-300")
+            if not os.path.exists(model_path):
+                os.makedirs(model_path)
+            self.w2v_model.save(model_path)
+        self.corpus = [
+            sentence.split() for sentence in self.semeval_train_dataset
+        ]
+        self.dictionary = Dictionary(self.corpus)
+        self.tfidf = TfidfModel(dictionary=self.dictionary)
+        self.similarity_index = WordEmbeddingSimilarityIndex(self.w2v_model.wv)
+        self.similarity_matrix = SparseTermSimilarityMatrix(
+            self.similarity_index, self.dictionary, self.tfidf)
+
+        # embedding yelp sentences
+        print("Embedding yelp sentences ...")
+        try:
+            with open("save/embedding_vetors.pkl", "rb") as f:
+                self.embedded = pickle.load(f)
+        except:
+            self.embedded = [
+                self.sentence_embedd_average(sentence)
+                for sentence in self.yelp_dataset.processed_sentences
+            ]
+            with open("save/embedding_vetors.pkl", "wb") as f:
+                pickle.dump(self.embedded, f)
+
+        # processor for preprocessing sentences
+        self.processor = Preprocessor()
+
+        # cluster yelp sentences
+        self.k_mean_clustering_yelp()
+
+        # get cluster similarity score with categories
+        self.get_cluster_category_score()
+
+        # test performance on test set
+        self.evaluate_testset()
 
     def sentence_embedd_average(self, sentence):
-        sum_of_words = np.zeros(300)
-        for word in sentence:
-            try:
-                sum_of_words += self.w2v_model[word]
-            except KeyError:
-                continue
-        return sum_of_words / len(sentence)
+        '''
+        Get the average word embedding of a sentence
+        '''
+        return np.mean(
+            [
+                self.w2v_model[word]
+                for word in sentence if word in self.w2v_model
+            ],
+            axis=0,
+        )
 
-    def get_distances(self, center, points):
-        distances = []
-        for point in points:
-            distances.append(np.linalg.norm(point - center))
-        return distances
+    def k_mean_clustering_yelp(self, k=12):
+        '''
+        Cluster embedded yelp sentences by k-means 
+        '''
+        print("Clustering ...")
+        self.kmeans = KMeans(n_clusters=k, random_state=0).fit(self.embedded)
+        self.cluster_indexes = self.kmeans.labels_
+        self.centroids = self.kmeans.cluster_centers_
 
-    def initialize_clusters(self, points, k):
-        random_points = []
-        while True:
-            random_num = np.random.randint(0, len(points))
-            random_points.append(
-                self.sentence_embedd_average(points[random_num]))
-            if len(random_points) == k:
-                break
-        return random_points
+    def get_sentence_category_similarity(self, sentence, seeds):
+        '''
+        Get the average soft cosine similarity of a sentence with seed words
+        '''
+        results = [
+            self.similarity_matrix.inner_product(
+                self.dictionary.doc2bow(sentence.split()),
+                self.dictionary.doc2bow([seed]),
+            ) for seed in seeds
+        ]
+        return np.mean(results)
 
-    def k_means_clustering_yelp(self, k):
-        max_iter = 100
-        centroids = self.initialize_clusters(self.yelp_sentences, k)
+    def get_sentence_category_score(self, sentence, category):
+        '''
+        Get the similarity score of a sentence with a category
+        '''
+        if category in self.category_seed_words:
+            return sigmoid(
+                self.get_sentence_category_similarity(
+                    sentence, self.category_seed_words[category]))
+        return 0.0
 
-        cluster_indexs = len(self.yelp_sentences) * [0]
-        old_loss = float('inf')
-        print('Clustering yelp sentences into ' + str(k) + ' clusters.')
-        for i in range(max_iter):
-            distances = []
-            loss = 0
-            for j in range(len(self.yelp_sentences)):
-                centroid_distances = self.get_distances(
-                    self.sentence_embedd_average(self.yelp_sentences[j]), centroids)
-                distances.append(centroid_distances)
-            for j in range(len(distances)):
-                try:
-                    cluster_indexs[j] = int(np.argmin(distances[j]))
-                    loss += distances[j][cluster_indexs[j]]
-                except:
-                    print(distances[j])
-            if loss >= old_loss:
-                print('Converged in ' + str(i) + ' iterations.')
-                break
-            else:
-                old_loss = loss
-            for c in range(k):
-                if len([j for j in range(len(self.yelp_sentences)) if cluster_indexs[j] == c]) < 2:
-                    continue
-                centroids[c] = np.mean([self.sentence_embedd_average(self.yelp_sentences[j])
-                                        for j in range(len(self.yelp_sentences))
-                                        if cluster_indexs[j] == c], 0)
-        return cluster_indexs, centroids
+    def get_sentence_category_scores(self, sentence):
+        '''
+        Get the similarity scores of a sentence with categories
+        '''
+        return np.array([
+            self.get_sentence_category_score(sentence, category)
+            for category in self.categories
+        ])
 
-    def get_category_seed_similarity(self, sentence, seeds, similarity_matrix):
-        result = 0
-        length = len(seeds)
-        sentence_d2b = self.dictionary.doc2bow(sentence)
-        for word in seeds:
-            seed_d2b = self.dictionary.doc2bow([word])
-            result += softcossim(sentence_d2b, seed_d2b, similarity_matrix)
-        return result / length
+    def get_cluster_category_score(self):
+        '''
+        Get the similarity scores of yelp clusters with categories
+        '''
+        print("Getting cluster similarity score with categories ...")
+        self.cluster_category_similarity = []
+        for cluster_index in len(self.centroids):
+            # sentences in this cluster
+            cluster_sentences = [
+                self.yelp_dataset.processed_sentences[i]
+                for i in range(self.cluster_indexes)
+                if self.cluster_indexes[i] == cluster_index
+            ]
+            # similarity of this cluster to each category
+            cluster_scores = [
+                np.mean([
+                    self.get_sentence_category_scores(sentence)
+                    for sentence in cluster_sentences
+                ],
+                        axis=0)
+            ]
 
-    def classify_clusters(self, cluster_indexes, centroids):
-        clustScore = defaultdict(list)
-        print('Classifying clusters.')
-        for c in tqdm(range(len(centroids))):
-            cluster_sentences = [self.yelp_sentences[j] for j in range(len(self.yelp_sentences))
-                                 if cluster_indexes[j] == c]
-            category_similarities = len(self.categories) * [0.0]
-            for sentence in cluster_sentences:
-                for cat in self.categories:
-                    if cat == 'anecdotes/miscellaneous':
-                        continue
-                    seeds = self.category_seed_words[cat]
-                    category_similarities[self.category_label_num[cat]] += \
-                        sigmoid(self.get_category_seed_similarity(sentence, seeds,
-                                                                  self.similarity_matrix))
-            try:
-                category_similarities = [category_similarities[j] / len(cluster_sentences)
-                                         for j in range(len(category_similarities))]
-            except ZeroDivisionError:
-                pass
-            clustScore[c] = category_similarities[:]
-            print(clustScore)
-        return clustScore
+            self.cluster_category_similarity.append(cluster_scores)
 
-    def getClusterScores(self, sentence, centroids, cluster_category_similarities):
-        centroid_distances = self.get_distances(
-            self.sentence_embedd_average(sentence), centroids)
-        nearest_cluster = int(np.argmin(centroid_distances))
-        return cluster_category_similarities[nearest_cluster]
+    def get_test_sentence_scores(self, sentence, alpha=0.5, is_processed=True):
+        '''
+        Get the predicted scores of a sentence with categories
+        '''
+        if not is_processed:
+            sentence = self.processor.preprocess(sentence)
+        embedded_sentence = self.sentence_embedd_average(sentence)
+        pred_cluster = self.kmeans.predict(embedded_sentence)
+        print(pred_cluster)
+        cluster_scores = self.cluster_category_similarity[pred_cluster]
+        sentence_scores = self.get_sentence_category_scores(sentence)
+        #nomalize cluster scores and sentence scores by np.linagl.norm
+        cluster_scores = cluster_scores / np.linalg.norm(cluster_scores)
+        sentence_scores = sentence_scores / np.linalg.norm(sentence_scores)
+        scores = (1 - alpha) * cluster_scores + alpha * sentence_scores
+        return scores, sentence_scores, cluster_scores
 
-    def softmax(self, x):
-        e_x = np.exp(x - np.max(x))
-        return e_x / e_x.sum(axis=0)
+    def evaluate_testset(self, alpha=0.5):
+        print("Predicting ...")
+        self.results = {"predict": [], "true": []}
+        for idx in tqdm(range(len(self.semeval_test_dataset))):
+            sentence = self.semeval_test_dataset.processed_sentences[idx]
+            scores, _, _ = self.get_test_sentence_scores(sentence, alpha)
+            labels = self.semeval_test_dataset.labels[idx]
+            self.results["predict"].append(scores)
+            self.results["true"].append(labels)
 
-    def cos_sim(self, a, b):
-        dot_product = np.dot(a, b)
-        norm_a = np.linalg.norm(a)
-        norm_b = np.linalg.norm(b)
-        return dot_product / (norm_a * norm_b)
+        print("Evaluating ...")
+        # Calculate Hamming Loss
+        hamming_loss_value = hamming_loss(self.results["true"],
+                                          self.results["predict"])
+        print("Hamming Loss:", hamming_loss_value)
 
-    def find_best_threshold(self, predicted_scores, gtruth_labels):
-        threshold = 0.19
-        best_res = [0.0, 0.0, 0.0, 0.0]
-        while threshold < 0.7:
-            TP = 0
-            FP = 0
-            FN = 0
-            for i in range(len(gtruth_labels)):
-                pred_labels = deepcopy(predicted_scores[i])
-                ground_truth = deepcopy(gtruth_labels[i])
-                for idx in range(len(pred_labels)):
-                    if pred_labels[idx] > threshold:
-                        pred_labels[idx] = 1
-                    else:
-                        pred_labels[idx] = 0
-                if np.any(pred_labels) == 0:
-                    pred_labels[4] = 1
-                for idx in range(len(pred_labels)):
-                    if pred_labels[idx] == 1:
-                        if idx in ground_truth:
-                            TP += 1
-                        else:
-                            FP += 1
-                    else:
-                        if idx in ground_truth:
-                            FN += 1
-            try:
-                precision = TP / (TP + FP)
-                recall = TP / (TP + FN)
-                f1 = 2 * (precision * recall) / (precision + recall)
-            except ZeroDivisionError:
-                f1 = 0.0
-            if f1 > best_res[0]:
-                best_res = [f1, precision, recall, threshold]
-            threshold += 0.0001
-            threshold = round(threshold, 4)
-        return best_res
+        # Calculate Precision
+        precision = precision_score(self.results["true"],
+                                    self.results["predict"],
+                                    average='micro')
+        print("Precision:", precision)
 
-    def classify_test_sentences(self, alpha, cluster_category_similarities, centroids):
-        predicted_scores = []
-        gtruth_labels = []
-        print('Classifying test sentences ...')
-        for i, sentence in tqdm(enumerate(self.test_sentences)):
-            clustScore = self.getClusterScores(
-                sentence, centroids, cluster_category_similarities)
-            gtruth_label = self.test_sentences_with_label[i][1]
+        # Calculate Recall
+        recall = recall_score(self.results["true"],
+                              self.results["predict"],
+                              average='micro')
+        print("Recall:", recall)
 
-            sentScore = len(self.categories) * [0.0]
-            for cat in self.categories:
-                if cat == 'anecdotes/miscellaneous':
-                    continue
-                seeds = self.category_seed_words[cat]
-                sentScore[self.category_label_num[cat]] += sigmoid(
-                    self.get_category_seed_similarity(sentence, seeds, self.similarity_matrix))
+        # Calculate F1-Score
+        f1 = f1_score(self.results["true"],
+                      self.results["predict"],
+                      average='micro')
+        print("F1-Score:", f1)
 
-            sentScore_N = np.array(sentScore) / \
-                np.linalg.norm(np.array(sentScore))
-            clustScore_N = np.array(clustScore) / \
-                np.linalg.norm(np.array(clustScore))
-            score = alpha * sentScore_N + (1-alpha) * clustScore_N
-
-            predicted_scores.append(deepcopy(score))
-            gtruth_labels.append(deepcopy(gtruth_label))
-        result = self.find_best_threshold(predicted_scores, gtruth_labels)
-        return result
+    def predict(self, sentence, threshold=0.5):
+        '''
+        Predict the categories of a sentence
+        '''
+        print(sentence)
+        scores, _, _ = self.get_test_sentence_scores(sentence)
+        labels = []
+        for idx in range(len(self.categories[:-1])):
+            print(f"{self.categories[idx]}: {scores[idx]}")
+            if scores[idx] > threshold:
+                labels.append(self.categories[idx])
+        if not labels:
+            labels.append(self.categories[-1])
+        print("Predicted labels:", labels)
