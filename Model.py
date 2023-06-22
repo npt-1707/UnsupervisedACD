@@ -7,7 +7,7 @@ from gensim.models import TfidfModel
 
 import numpy as np
 from tqdm import tqdm
-import pickle, os
+import pickle, os, random
 from sklearn.cluster import KMeans
 from sklearn.metrics import hamming_loss, precision_score, recall_score, f1_score
 
@@ -21,22 +21,9 @@ def sigmoid(x, derivative=False):
 
 class UnsupervisedACD:
 
-    def __init__(self):
+    def __init__(self, num_clusters=12):
         print("Initializing ...")
-        self.category_label_num = {
-            "service": 0,
-            "food": 1,
-            "price": 2,
-            "ambience": 3,
-            "anecdotes/miscellaneous": 4,
-        }
-        self.category_num_label = {
-            0: "service",
-            1: "food",
-            2: "price",
-            3: "ambience",
-            4: "anecdotes/miscellaneous",
-        }
+        self.num_clusters = num_clusters
         self.category_seed_words = {
             "service":
             {"service", "staff", "friendly", "attentive", "manager"},
@@ -72,37 +59,37 @@ class UnsupervisedACD:
         self.w2v_model = models.KeyedVectors.load_word2vec_format(
             'save/yelp_W2V_300_orig.bin', binary=True)
 
-        self.corpus = [
-            sentence.split()
-            for sentence in self.semeval_train_dataset.processed_sentences
-        ]
-        self.dictionary = Dictionary(self.corpus)
-        self.tfidf = TfidfModel(dictionary=self.dictionary)
-        self.similarity_index = WordEmbeddingSimilarityIndex(self.w2v_model)
-        print("Building similarity matrix ...")
-        self.similarity_matrix = SparseTermSimilarityMatrix(
-            self.similarity_index, self.dictionary, self.tfidf)
         if os.path.exists("save/model.pkl"):
             self.load()
         else:
+            self.corpus = [
+                sentence.split()
+                for sentence in self.semeval_train_dataset.processed_sentences
+            ]
+            self.dictionary = Dictionary(self.corpus)
+            self.tfidf = TfidfModel(dictionary=self.dictionary)
+            self.similarity_index = WordEmbeddingSimilarityIndex(
+                self.w2v_model)
+            print("Building similarity matrix ...")
+            self.similarity_matrix = SparseTermSimilarityMatrix(
+                self.similarity_index, self.dictionary, self.tfidf)
             # embedding yelp sentences
             print("Embedding yelp sentences ...")
+            yelp_sample = random.sample(self.yelp_dataset.processed_sentences,
+                                        100000)
             self.embedded = [
                 self.sentence_embedd_average(sentence)
-                for sentence in tqdm(self.yelp_dataset.processed_sentences)
+                for sentence in tqdm(yelp_sample)
             ]
 
             # cluster yelp sentences
-            self.k_mean_clustering_yelp()
+            self.k_means_clustering_yelp()
 
             # get cluster similarity score with categories
             self.get_cluster_category_score()
 
             # save clusters
             self.save()
-
-        # test performance on test set
-        self.evaluate_testset()
 
     def sentence_embedd_average(self, sentence):
         '''
@@ -116,12 +103,13 @@ class UnsupervisedACD:
             axis=0,
         )
 
-    def k_mean_clustering_yelp(self, k=12):
+    def k_means_clustering_yelp(self):
         '''
         Cluster embedded yelp sentences by k-means 
         '''
         print("Clustering ...")
-        self.kmeans = KMeans(n_clusters=k, max_iter=100,
+        self.kmeans = KMeans(n_clusters=self.num_clusters,
+                             max_iter=100,
                              random_state=0).fit(self.embedded)
         self.cluster_indexes = self.kmeans.labels_
         self.centroids = self.kmeans.cluster_centers_
@@ -163,22 +151,21 @@ class UnsupervisedACD:
         '''
         print("Getting cluster similarity score with categories ...")
         self.cluster_category_similarity = []
-        for cluster_index in len(self.centroids):
+        for cluster_index in range(len(self.centroids)):
+            print(f"Cluster {cluster_index} ...", end="")
             # sentences in this cluster
             cluster_sentences = [
                 self.yelp_dataset.processed_sentences[i]
-                for i in range(self.cluster_indexes)
-                if self.cluster_indexes[i] == cluster_index
+                for i, centroid_idx in enumerate(self.cluster_indexes)
+                if centroid_idx == cluster_index
             ]
             # similarity of this cluster to each category
-            cluster_scores = [
-                np.mean([
-                    self.get_sentence_category_scores(sentence)
-                    for sentence in cluster_sentences
-                ],
-                        axis=0)
-            ]
-
+            cluster_scores = np.mean([
+                self.get_sentence_category_scores(sentence)
+                for sentence in cluster_sentences
+            ],
+                                     axis=0)
+            print(cluster_scores)
             self.cluster_category_similarity.append(cluster_scores)
 
     def get_test_sentence_scores(self,
@@ -191,16 +178,20 @@ class UnsupervisedACD:
         if not is_processed:
             sentence = self.processor.preprocess(sentence)
         embedded_sentence = self.sentence_embedd_average(sentence)
-        pred_cluster = self.kmeans.predict(embedded_sentence)
+        pred_cluster = self.kmeans.predict([embedded_sentence])[0]
         cluster_scores = self.cluster_category_similarity[pred_cluster]
         sentence_scores = self.get_sentence_category_scores(sentence)
+        print(cluster_scores)
+        print(sentence_scores)
         #nomalize cluster scores and sentence scores by np.linagl.norm
         cluster_scores = cluster_scores / np.linalg.norm(cluster_scores)
         sentence_scores = sentence_scores / np.linalg.norm(sentence_scores)
+        print(cluster_scores)
+        print(sentence_scores)
         scores = (1 - alpha) * cluster_scores + alpha * sentence_scores
         return scores, sentence_scores, cluster_scores
 
-    def evaluate_testset(self, alpha=0.5):
+    def evaluate_testset(self, alpha=0.5, threshold=0.5):
         '''
         Evaluate the performance of model on testset
         '''
@@ -214,30 +205,49 @@ class UnsupervisedACD:
             labels = self.semeval_test_dataset.labels[idx]
             self.results["predict"].append(scores)
             self.results["true"].append(labels)
-
+        self.results["predict"] = np.array(self.results["predict"])
+        self.results["true"] = np.array(self.results["true"])
         print("Evaluating ...")
+        threshold = 0.5
+        binary_predictions = (self.results["predict"] >= threshold).astype(int)
+
         # Calculate Hamming Loss
         hamming_loss_value = hamming_loss(self.results["true"],
-                                          self.results["predict"])
+                                          binary_predictions)
         print("Hamming Loss:", hamming_loss_value)
 
         # Calculate Precision
-        precision = precision_score(self.results["true"],
-                                    self.results["predict"],
-                                    average='micro')
-        print("Precision:", precision)
+        precision_micro = precision_score(self.results["true"],
+                                          binary_predictions,
+                                          average='micro')
+        print("Precision (Micro):", precision_micro)
+
+        precision_macro = precision_score(self.results["true"],
+                                          binary_predictions,
+                                          average='macro')
+        print("Precision (Macro):", precision_macro)
 
         # Calculate Recall
-        recall = recall_score(self.results["true"],
-                              self.results["predict"],
-                              average='micro')
-        print("Recall:", recall)
+        recall_micro = recall_score(self.results["true"],
+                                    binary_predictions,
+                                    average='micro')
+        print("Recall (Micro):", recall_micro)
+
+        recall_macro = recall_score(self.results["true"],
+                                    binary_predictions,
+                                    average='macro')
+        print("Recall (Macro):", recall_macro)
 
         # Calculate F1-Score
-        f1 = f1_score(self.results["true"],
-                      self.results["predict"],
-                      average='micro')
-        print("F1-Score:", f1)
+        f1_micro = f1_score(self.results["true"],
+                            binary_predictions,
+                            average='micro')
+        print("F1-Score (Micro):", f1_micro)
+
+        f1_macro = f1_score(self.results["true"],
+                            binary_predictions,
+                            average='macro')
+        print("F1-Score (Macro):", f1_macro)
 
     def predict(self, sentence, threshold=0.5):
         '''
@@ -245,6 +255,7 @@ class UnsupervisedACD:
         '''
         print(sentence)
         scores, _, _ = self.get_test_sentence_scores(sentence)
+        print(scores)
         labels = []
         for idx in range(len(self.categories[:-1])):
             print(f"{self.categories[idx]}: {scores[idx]}")
@@ -256,6 +267,8 @@ class UnsupervisedACD:
 
     def save(self):
         state_dict = {
+            "dictionary": self.dictionary,
+            "similarity_matrix": self.similarity_matrix,
             "kmeans": self.kmeans,
             "cluster_score": self.cluster_category_similarity
         }
@@ -266,5 +279,7 @@ class UnsupervisedACD:
     def load(self):
         with open("save/model.pkl", 'rb') as f:
             state_dict = pickle.load(f)
+        self.dictionary = state_dict["dictionary"]
+        self.similarity_matrix = state_dict["similarity_matrix"]
         self.kmeans = state_dict["kmeans"]
         self.cluster_category_similarity = state_dict["cluster_score"]
