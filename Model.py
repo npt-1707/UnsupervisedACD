@@ -21,9 +21,23 @@ def sigmoid(x, derivative=False):
 
 class UnsupervisedACD:
 
-    def __init__(self, num_clusters=12):
+    def __init__(self, num_clusters=12, num_yelp=10000):
         print("Initializing ...")
+        # number of clusters
         self.num_clusters = num_clusters
+        self.num_yelp = num_yelp
+        self.save_path = f"save/{num_clusters}_{num_yelp}_model.pkl"
+
+        # categories
+        self.categories = [
+            "service",
+            "food",
+            "price",
+            "ambience",
+            "anecdotes/miscellaneous",
+        ]
+
+        # seed words for each category
         self.category_seed_words = {
             "service":
             {"service", "staff", "friendly", "attentive", "manager"},
@@ -32,13 +46,7 @@ class UnsupervisedACD:
             "ambience":
             {"ambience", "atmosphere", "decor", "romantic", "loud"},
         }
-        self.categories = [
-            "service",
-            "food",
-            "price",
-            "ambience",
-            "anecdotes/miscellaneous",
-        ]
+
         # processor for preprocessing sentences
         self.processor = Preprocessor()
 
@@ -59,7 +67,7 @@ class UnsupervisedACD:
         self.w2v_model = models.KeyedVectors.load_word2vec_format(
             'save/yelp_W2V_300_orig.bin', binary=True)
 
-        if os.path.exists("save/model.pkl"):
+        if os.path.exists(self.save_path):
             self.load()
         else:
             self.corpus = [
@@ -73,10 +81,11 @@ class UnsupervisedACD:
             print("Building similarity matrix ...")
             self.similarity_matrix = SparseTermSimilarityMatrix(
                 self.similarity_index, self.dictionary, self.tfidf)
+            
             # embedding yelp sentences
             print("Embedding yelp sentences ...")
             yelp_sample = random.sample(self.yelp_dataset.processed_sentences,
-                                        100000)
+                                        self.num_yelp)
             self.embedded = [
                 self.sentence_embedd_average(sentence)
                 for sentence in tqdm(yelp_sample)
@@ -181,13 +190,9 @@ class UnsupervisedACD:
         pred_cluster = self.kmeans.predict([embedded_sentence])[0]
         cluster_scores = self.cluster_category_similarity[pred_cluster]
         sentence_scores = self.get_sentence_category_scores(sentence)
-        print(cluster_scores)
-        print(sentence_scores)
         #nomalize cluster scores and sentence scores by np.linagl.norm
         cluster_scores = cluster_scores / np.linalg.norm(cluster_scores)
         sentence_scores = sentence_scores / np.linalg.norm(sentence_scores)
-        print(cluster_scores)
-        print(sentence_scores)
         scores = (1 - alpha) * cluster_scores + alpha * sentence_scores
         return scores, sentence_scores, cluster_scores
 
@@ -255,7 +260,6 @@ class UnsupervisedACD:
         '''
         print(sentence)
         scores, _, _ = self.get_test_sentence_scores(sentence)
-        print(scores)
         labels = []
         for idx in range(len(self.categories[:-1])):
             print(f"{self.categories[idx]}: {scores[idx]}")
@@ -273,11 +277,11 @@ class UnsupervisedACD:
             "cluster_score": self.cluster_category_similarity
         }
 
-        with open("save/model.pkl", 'wb') as f:
+        with open(self.save_path, 'wb') as f:
             pickle.dump(state_dict, f)
 
     def load(self):
-        with open("save/model.pkl", 'rb') as f:
+        with open(self.save_path, 'rb') as f:
             state_dict = pickle.load(f)
         self.dictionary = state_dict["dictionary"]
         self.similarity_matrix = state_dict["similarity_matrix"]
