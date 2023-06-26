@@ -1,6 +1,3 @@
-import gensim.downloader as api
-from gensim.models import Word2Vec
-from gensim import models
 from gensim.corpora import Dictionary
 from gensim.similarities import SparseTermSimilarityMatrix, WordEmbeddingSimilarityIndex
 from gensim.models import TfidfModel
@@ -10,7 +7,7 @@ from tqdm import tqdm
 import pickle, os, random
 from copy import deepcopy
 from sklearn.cluster import KMeans
-from sklearn.metrics import precision_score, recall_score, f1_score
+from sklearn.metrics import precision_score, recall_score, f1_score, classification_report
 
 from Preprocessing import Preprocessor
 
@@ -23,7 +20,6 @@ class UnsupervisedACD:
 
     def __init__(self, corpus, num_clusters=12, max_iter=100):
         print("Initializing ...")
-        # number of clusters
         self.num_clusters = num_clusters
         self.max_iter = max_iter
         self.processor = Preprocessor()
@@ -32,14 +28,14 @@ class UnsupervisedACD:
 
     def fit(self, dataset, sample=None):
         self.save_path = f"save/{dataset.name}_{self.num_clusters}_model.pkl"
-        if os.path.exists(self.save_path):
-            print("Model exists, loading ...")
-            self.load()
-            return
         self.categories = list(dataset.category_label_num.keys())
         self.category_seed_words = dataset.category_seed_words
         self.w2v_model = dataset.w2v_model
         self.sentences = dataset.sentences
+        if os.path.exists(self.save_path):
+            print("Model exists, loading ...")
+            self.load()
+            return
 
         self.similarity_index = WordEmbeddingSimilarityIndex(self.w2v_model)
         print("Building similarity matrix ...")
@@ -178,20 +174,19 @@ class UnsupervisedACD:
 
     def validate(self, dataset):
         print("Validating ...")
-        alpha = 0.1
-        best = [0.0] * 3
-        while alpha < 1.0:
+        best_res = [0.0] * 3
+        for alpha in range(2, 9):
             self.results = {"predict": [], "true": []}
             for idx in range(len(dataset)):
                 sentence = dataset.sentences[idx]
                 scores, _, _ = self.get_test_sentence_scores(sentence,
-                                                             alpha=alpha,
+                                                             alpha=alpha/10,
                                                              is_processed=True)
                 label = dataset.labels[idx]
                 self.results["predict"].append(np.argmax(scores))
                 self.results["true"].append(label)
 
-            best_res = [
+            res = [
                 f1_score(self.results["true"],
                          self.results["predict"],
                          average='micro'),
@@ -202,17 +197,14 @@ class UnsupervisedACD:
                              self.results["predict"],
                              average='micro')
             ]
-            if best_res[0] > best[0]:
-                best = best_res
+            if res[0] > best_res[0]:
+                best_res = res
                 self.alpha = alpha
 
-                print(f"Alpha: {alpha} - Best result: {best}")
-            alpha += 0.1
+            print(f"Alpha: {alpha} - Result: {res}")
 
     def save(self):
         state_dict = {
-            "dictionary": self.dictionary,
-            "tfidf": self.tfidf,
             "similarity_matrix": self.similarity_matrix,
             "kmeans": self.kmeans,
             "cluster_score": self.cluster_category_similarity
@@ -224,11 +216,9 @@ class UnsupervisedACD:
     def load(self):
         with open(self.save_path, 'rb') as f:
             state_dict = pickle.load(f)
-        self.dictionary = state_dict["dictionary"]
         self.similarity_matrix = state_dict["similarity_matrix"]
         self.kmeans = state_dict["kmeans"]
         self.cluster_category_similarity = state_dict["cluster_score"]
-        self.tfidf = state_dict["tfidf"]
 
     def evaluate(self, dataset):
         '''
@@ -236,38 +226,13 @@ class UnsupervisedACD:
         '''
         print("Predicting ...")
         self.results = {"predict": [], "true": []}
-        for idx in tqdm(range(len(self.dataset))):
-            sentence = self.dataset.sentences[idx]
+        for idx in tqdm(range(len(dataset))):
+            sentence = dataset.sentences[idx]
             scores, _, _ = self.get_test_sentence_scores(sentence,
                                                          alpha=self.alpha,
                                                          is_processed=False)
-            label = self.dataset.labels[idx]
+            label = dataset.labels[idx]
             self.results["predict"].append(np.argmax(scores))
             self.results["true"].append(label)
 
-        # print f1, recall, precision in micro and macro
-        print(
-            "F1 score (micro):",
-            f1_score(self.results["true"],
-                     self.results["predict"],
-                     average='micro'))
-        print(
-            "F1 score (macro):",
-            f1_score(self.results["true"],
-                     self.results["predict"],
-                     average='macro'))
-        print(
-            "Precision (micro):",
-            precision_score(self.results["true"],
-                            self.results["predict"],
-                            average='micro'))
-        print(
-            "Precision (macro):",
-            precision_score(self.results["true"],
-                            self.results["predict"],
-                            average='macro'))
-        print(
-            "Recall (micro):",
-            recall_score(self.results["true"],
-                         self.results["predict"],
-                         average='micro'))
+        print(classification_report(self.results["true"], self.results["predict"], target_names=self.categories))

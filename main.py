@@ -1,9 +1,6 @@
 from Model import UnsupervisedACD
 from DataLoader import *
 
-model = UnsupervisedACD(4, 1000000)
-model.evaluate_testset()
-
 city_search = {
     "train":
     TXTDataset(name="city_search_train",
@@ -15,12 +12,12 @@ city_search = {
                label_path="data/CitySearch/test_label.txt")
 }
 
-yelp = {
-    "train":
-    TXTDataset(name="yelp_train",
-               text_path="data/Yelp/yelp_restaurant_review.txt",
-               w2v=True)
-}
+# yelp = {
+#     "train":
+#     TXTDataset(name="yelp_train",
+#                text_path="data/Yelp/yelp_restaurant_review.txt",
+#                w2v=True)
+# }
 
 sem_eval = {
     "train":
@@ -41,4 +38,4 @@ model.fit(city_search["train"])
 
 model.validate(sem_eval["train"])
 
-model.test(city_search["test"])
+model.evaluate(city_search["test"])
