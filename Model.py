@@ -18,16 +18,19 @@ def sigmoid(x, derivative=False):
 
 class UnsupervisedACD:
 
-    def __init__(self, corpus, num_clusters=12, max_iter=100):
+    def __init__(self, corpus_dataset, num_clusters=12, max_iter=100):
         print("Initializing ...")
         self.num_clusters = num_clusters
         self.max_iter = max_iter
         self.processor = Preprocessor()
+
+        corpus = [sentence.split() for sentence in corpus_dataset.sentences]
+        self.corpus_name = corpus_dataset.name
         self.dictionary = Dictionary(corpus)
         self.tfidf = TfidfModel(dictionary=self.dictionary)
 
     def fit(self, dataset, sample=None):
-        self.save_path = f"save/{dataset.name}_{self.num_clusters}_model.pkl"
+        self.save_path = f"save/{dataset.name}_{self.corpus_name}_{self.num_clusters}_model.pkl"
         self.categories = list(dataset.category_label_num.keys())
         self.category_seed_words = dataset.category_seed_words
         self.w2v_model = dataset.w2v_model
@@ -131,11 +134,22 @@ class UnsupervisedACD:
                 if centroid_idx == cluster_index
             ]
             # similarity of this cluster to each category
-            cluster_scores = np.mean([
-                self.get_sentence_category_scores(sentence)
-                for sentence in cluster_sentences
-            ],
-                                     axis=0)
+            cluster_scores = np.array([])
+            for category in self.categories:
+                cluster_score = np.mean([
+                    self.get_sentence_category_similarity(
+                        sentence, self.category_seed_words[category])
+                    for sentence in cluster_sentences
+                ],
+                                        axis=0)
+                cluster_score = sigmoid(cluster_score)
+                cluster_scores.append(cluster_score)
+
+            # cluster_scores = np.mean([
+            #     self.get_sentence_category_scores(sentence)
+            #     for sentence in cluster_sentences
+            # ],
+            #                          axis=0)
             print(cluster_scores)
             self.cluster_category_similarity.append(cluster_scores)
 
@@ -163,9 +177,8 @@ class UnsupervisedACD:
         Predict the categories of a sentence
         '''
         print(sentence)
-        scores, sentence_scores, cluster_scores = self.get_test_sentence_scores(sentence,
-                                                     alpha=alpha,
-                                                     is_processed=is_processed)
+        scores, sentence_scores, cluster_scores = self.get_test_sentence_scores(
+            sentence, alpha=alpha, is_processed=is_processed)
         #print scores, sentence_scores, cluster_scores
         print("Predicted scores:", scores)
         print("Predicted sentence scores:", sentence_scores)
@@ -180,7 +193,7 @@ class UnsupervisedACD:
             for idx in range(len(dataset)):
                 sentence = dataset.sentences[idx]
                 scores, _, _ = self.get_test_sentence_scores(sentence,
-                                                             alpha=alpha/10,
+                                                             alpha=alpha / 10,
                                                              is_processed=True)
                 label = dataset.labels[idx]
                 self.results["predict"].append(np.argmax(scores))
@@ -189,13 +202,13 @@ class UnsupervisedACD:
             res = [
                 f1_score(self.results["true"],
                          self.results["predict"],
-                         average='micro'),
+                         average='macro'),
                 precision_score(self.results["true"],
                                 self.results["predict"],
-                                average='micro'),
+                                average='macro'),
                 recall_score(self.results["true"],
                              self.results["predict"],
-                             average='micro')
+                             average='macro')
             ]
             if res[0] > best_res[0]:
                 best_res = res
@@ -235,4 +248,7 @@ class UnsupervisedACD:
             self.results["predict"].append(np.argmax(scores))
             self.results["true"].append(label)
 
-        print(classification_report(self.results["true"], self.results["predict"], target_names=self.categories))
+        print(
+            classification_report(self.results["true"],
+                                  self.results["predict"],
+                                  target_names=self.categories))

@@ -30,9 +30,7 @@ sem_eval = {
         path="data/ABSA_TestData_PhaseB/Restaurants_Test_Data_phaseB.xml")
 }
 
-corpus = [sentence.split() for sentence in sem_eval["train"].sentences]
-
-model = UnsupervisedACD(corpus, num_clusters=4, max_iter=100)
+model = UnsupervisedACD(city_search["train"], num_clusters=4, max_iter=100)
 
 model.fit(city_search["train"])
 
