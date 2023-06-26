@@ -30,19 +30,6 @@ class Dataset():
     def __len__(self):
         return len(self.sentences)
 
-    def label2vec(self, label):
-        onehot = [0] * len(self.category_label_num)
-        for aspect in label:
-            onehot[self.category_label_num[aspect]] = 1
-        return onehot
-
-    def vec2label(self, vec):
-        label = []
-        for i in range(len(vec)):
-            if vec[i] == 1:
-                label.append(list(self.category_label_num.keys())[i])
-        return label
-
     def get_w2v_model(self, size=300):
         path = f"save/{self.name}_w2v_{size}.bin"
         if not os.path.exists("save"):
@@ -66,7 +53,7 @@ class XMLDataset(Dataset):
     def __init__(self, name, path):
         super().__init__(name)
 
-        convert = {"food": "food", "service": "staff", "abmience": "ambience"}
+        convert = {"food": "food", "service": "staff", "ambience": "ambience"}
 
         tree = ET.parse(path)
         root = tree.getroot()
@@ -75,12 +62,12 @@ class XMLDataset(Dataset):
         self.labels = []
         for xml_sentence in tqdm(self.xml_sentences):
             text, label = self.extract_xml_sentence(xml_sentence)
-            if len(label) == 1 and label[0] in convert:
+            if len(label) == 1 and label[0] in convert.keys():
                 preprocessed_text = self.preprocessor.preprocess(text)
                 if preprocessed_text != "":
                     self.sentences.append(preprocessed_text)
-                    self.labels.append(self.label2vec([convert[label[0]]]))
-
+                    self.labels.append(self.category_label_num[convert[label[0]]])
+                
     def extract_xml_sentence(self, xml_sentence):
         text = xml_sentence.find("text").text
         text = text.replace('$', ' price ')
@@ -106,7 +93,8 @@ class TXTDataset(Dataset):
             with open(label_path, 'r') as f:
                 self.labels = f.read().split("\n")[:-1]
             self.labels = [
-                self.label2vec([label.lower()]) for label in tqdm(self.labels)
+                self.category_label_num[label.lower()]
+                for label in tqdm(self.labels)
             ]
 
         if w2v:

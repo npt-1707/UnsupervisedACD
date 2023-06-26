@@ -10,9 +10,8 @@ from tqdm import tqdm
 import pickle, os, random
 from copy import deepcopy
 from sklearn.cluster import KMeans
-from sklearn.metrics import hamming_loss, precision_score, recall_score, f1_score
+from sklearn.metrics import precision_score, recall_score, f1_score
 
-from DataLoader import XMLDataset, TXTDataset
 from Preprocessing import Preprocessor
 
 
@@ -22,12 +21,14 @@ def sigmoid(x, derivative=False):
 
 class UnsupervisedACD:
 
-    def __init__(self, num_clusters=12, max_iter=100):
+    def __init__(self, corpus, num_clusters=12, max_iter=100):
         print("Initializing ...")
         # number of clusters
         self.num_clusters = num_clusters
         self.max_iter = max_iter
         self.processor = Preprocessor()
+        self.dictionary = Dictionary(corpus)
+        self.tfidf = TfidfModel(dictionary=self.dictionary)
 
     def fit(self, dataset, sample=None):
         self.save_path = f"save/{dataset.name}_{self.num_clusters}_model.pkl"
@@ -35,9 +36,6 @@ class UnsupervisedACD:
             print("Model exists, loading ...")
             self.load()
             return
-        self.corpus = [sentence.split() for sentence in dataset.sentences]
-        self.dictionary = Dictionary(self.corpus)
-        self.tfidf = TfidfModel(dictionary=self.dictionary)
         self.categories = list(dataset.category_label_num.keys())
         self.category_seed_words = dataset.category_seed_words
         self.w2v_model = dataset.w2v_model
@@ -97,9 +95,9 @@ class UnsupervisedACD:
         '''
         results = [
             self.similarity_matrix.inner_product(
-                self.dictionary.doc2bow(sentence.split()),
-                self.dictionary.doc2bow([seed]),
-            ) for seed in seeds
+                self.tfidf[self.dictionary.doc2bow(sentence.split())],
+                self.tfidf[self.dictionary.doc2bow([seed])], (True, True))
+            for seed in seeds
         ]
         return np.mean(results)
 
@@ -164,69 +162,24 @@ class UnsupervisedACD:
         scores = (1 - alpha) * cluster_scores + alpha * sentence_scores
         return scores, sentence_scores, cluster_scores
 
-    def predict(self, sentence, is_processed, alpha=None, threshold=None):
+    def predict(self, sentence, is_processed, alpha=0.5):
         '''
         Predict the categories of a sentence
         '''
-        if not alpha:
-            alpha = self.alpha
-        if not threshold:
-            threshold = self.threshold
-
         print(sentence)
-        scores, _, _ = self.get_test_sentence_scores(sentence,
+        scores, sentence_scores, cluster_scores = self.get_test_sentence_scores(sentence,
                                                      alpha=alpha,
                                                      is_processed=is_processed)
-        print(scores)
-        labels = []
-        for idx in range(len(self.categories)):
-            print(f"{self.categories[idx]}: {scores[idx]}")
-            if scores[idx] > threshold:
-                labels.append(self.categories[idx])
-        print("Predicted labels:", labels)
-
-    def find_best_threshold(self, predicted_scores, gtruth_labels):
-        best_res = [0.0] * 4
-        threshold = 0.2
-        while threshold < 0.7:
-            TP = 0
-            FP = 0
-            FN = 0
-            for i in range(len(gtruth_labels)):
-                pred_labels = deepcopy(predicted_scores[i])
-                ground_truth = deepcopy(gtruth_labels[i])
-                for idx in range(len(pred_labels)):
-                    if pred_labels[idx] > threshold:
-                        pred_labels[idx] = 1
-                    else:
-                        pred_labels[idx] = 0
-                # if np.any(pred_labels) == 0:
-                #     pred_labels[4] = 1
-                for idx in range(len(pred_labels)):
-                    if pred_labels[idx] == 1:
-                        if idx in ground_truth:
-                            TP += 1
-                        else:
-                            FP += 1
-                    else:
-                        if idx in ground_truth:
-                            FN += 1
-            try:
-                precision = TP / (TP + FP)
-                recall = TP / (TP + FN)
-                f1 = 2 * (precision * recall) / (precision + recall)
-            except ZeroDivisionError:
-                f1 = 0.0
-            if f1 > best_res[0]:
-                best_res = [f1, precision, recall, threshold]
-            threshold.round(4)
-            threshold += 0.0001
-        return best_res
+        #print scores, sentence_scores, cluster_scores
+        print("Predicted scores:", scores)
+        print("Predicted sentence scores:", sentence_scores)
+        print("Predicted cluster scores:", cluster_scores)
+        print("Predicted labels:", self.categories[np.argmax(scores)])
 
     def validate(self, dataset):
         print("Validating ...")
         alpha = 0.1
-        best = [0.0] * 4
+        best = [0.0] * 3
         while alpha < 1.0:
             self.results = {"predict": [], "true": []}
             for idx in range(len(dataset)):
@@ -234,26 +187,32 @@ class UnsupervisedACD:
                 scores, _, _ = self.get_test_sentence_scores(sentence,
                                                              alpha=alpha,
                                                              is_processed=True)
-                labels = dataset.labels[idx]
-                self.results["predict"].append(scores)
-                self.results["true"].append(labels)
-            self.results["predict"] = np.array(self.results["predict"])
-            self.results["true"] = np.array(self.results["true"])
+                label = dataset.labels[idx]
+                self.results["predict"].append(np.argmax(scores))
+                self.results["true"].append(label)
 
-            best_res = self.find_best_threshold(self.results["predict"],
-                                                self.results["true"])
+            best_res = [
+                f1_score(self.results["true"],
+                         self.results["predict"],
+                         average='micro'),
+                precision_score(self.results["true"],
+                                self.results["predict"],
+                                average='micro'),
+                recall_score(self.results["true"],
+                             self.results["predict"],
+                             average='micro')
+            ]
             if best_res[0] > best[0]:
                 best = best_res
                 self.alpha = alpha
-                self.threshold = best_res[3]
-                print(
-                    f"Alpha: {alpha} - Threshold: {self.threshold} - Best result:",
-                    best[:3])
+
+                print(f"Alpha: {alpha} - Best result: {best}")
             alpha += 0.1
 
     def save(self):
         state_dict = {
             "dictionary": self.dictionary,
+            "tfidf": self.tfidf,
             "similarity_matrix": self.similarity_matrix,
             "kmeans": self.kmeans,
             "cluster_score": self.cluster_category_similarity
@@ -269,6 +228,7 @@ class UnsupervisedACD:
         self.similarity_matrix = state_dict["similarity_matrix"]
         self.kmeans = state_dict["kmeans"]
         self.cluster_category_similarity = state_dict["cluster_score"]
+        self.tfidf = state_dict["tfidf"]
 
     def evaluate(self, dataset):
         '''
@@ -281,49 +241,33 @@ class UnsupervisedACD:
             scores, _, _ = self.get_test_sentence_scores(sentence,
                                                          alpha=self.alpha,
                                                          is_processed=False)
-            labels = self.dataset.labels[idx]
-            self.results["predict"].append(scores)
-            self.results["true"].append(labels)
-        self.results["predict"] = np.array(self.results["predict"])
-        self.results["true"] = np.array(self.results["true"])
-        print("Evaluating ...")
-        binary_predictions = (self.results["predict"]
-                              >= self.threshold).astype(int)
+            label = self.dataset.labels[idx]
+            self.results["predict"].append(np.argmax(scores))
+            self.results["true"].append(label)
 
-        # Calculate Hamming Loss
-        hamming_loss_value = hamming_loss(self.results["true"],
-                                          binary_predictions)
-        print("Hamming Loss:", hamming_loss_value)
-
-        # Calculate Precision
-        precision_micro = precision_score(self.results["true"],
-                                          binary_predictions,
-                                          average='micro')
-        print("Precision (Micro):", precision_micro)
-
-        precision_macro = precision_score(self.results["true"],
-                                          binary_predictions,
-                                          average='macro')
-        print("Precision (Macro):", precision_macro)
-
-        # Calculate Recall
-        recall_micro = recall_score(self.results["true"],
-                                    binary_predictions,
-                                    average='micro')
-        print("Recall (Micro):", recall_micro)
-
-        recall_macro = recall_score(self.results["true"],
-                                    binary_predictions,
-                                    average='macro')
-        print("Recall (Macro):", recall_macro)
-
-        # Calculate F1-Score
-        f1_micro = f1_score(self.results["true"],
-                            binary_predictions,
-                            average='micro')
-        print("F1-Score (Micro):", f1_micro)
-
-        f1_macro = f1_score(self.results["true"],
-                            binary_predictions,
-                            average='macro')
-        print("F1-Score (Macro):", f1_macro)
+        # print f1, recall, precision in micro and macro
+        print(
+            "F1 score (micro):",
+            f1_score(self.results["true"],
+                     self.results["predict"],
+                     average='micro'))
+        print(
+            "F1 score (macro):",
+            f1_score(self.results["true"],
+                     self.results["predict"],
+                     average='macro'))
+        print(
+            "Precision (micro):",
+            precision_score(self.results["true"],
+                            self.results["predict"],
+                            average='micro'))
+        print(
+            "Precision (macro):",
+            precision_score(self.results["true"],
+                            self.results["predict"],
+                            average='macro'))
+        print(
+            "Recall (micro):",
+            recall_score(self.results["true"],
+                         self.results["predict"],
+                         average='micro'))
