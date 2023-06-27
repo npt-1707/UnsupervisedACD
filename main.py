@@ -12,12 +12,12 @@ city_search = {
                label_path="data/CitySearch/test_label.txt")
 }
 
-# yelp = {
-#     "train":
-#     TXTDataset(name="yelp_train",
-#                text_path="data/Yelp/yelp_restaurant_review.txt",
-#                w2v=True)
-# }
+yelp = {
+    "train":
+    TXTDataset(name="yelp_train",
+               text_path="data/Yelp/yelp_restaurant_review.txt",
+               w2v=True)
+}
 
 sem_eval = {
     "train":
@@ -30,10 +30,17 @@ sem_eval = {
         path="data/ABSA_TestData_PhaseB/Restaurants_Test_Data_phaseB.xml")
 }
 
-model = UnsupervisedACD(city_search["train"], num_clusters=4, max_iter=100)
-
-model.fit(city_search["train"])
-
+model = UnsupervisedACD(sem_eval["train"], num_clusters=16, max_iter=100)
+model.fit(city_search["train"], 10000)
 model.validate(sem_eval["train"])
-
 model.evaluate(city_search["test"])
+model.evaluate(sem_eval["test"])
+
+UnsupervisedACD.save(model.save_path, model)
+
+# save_path = "save/model_sem_eval_train_16_city_search_train_sem_eval_train.pkl"
+# model = UnsupervisedACD.load(save_path)
+# model.evaluate(city_search["test"])
+# model.evaluate(sem_eval["test"])
+# sentence = "The design and atmosphere is just as good."
+# print(model.predict(sentence))

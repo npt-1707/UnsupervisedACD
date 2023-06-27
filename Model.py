@@ -28,17 +28,16 @@ class UnsupervisedACD:
         self.corpus_name = corpus_dataset.name
         self.dictionary = Dictionary(corpus)
         self.tfidf = TfidfModel(dictionary=self.dictionary)
+        self.save_path = f"save/model_{corpus_dataset.name}_{self.num_clusters}"
+        if not os.path.exists("save"):
+            os.mkdir("save")
 
     def fit(self, dataset, sample=None):
-        self.save_path = f"save/{dataset.name}_{self.corpus_name}_{self.num_clusters}_model.pkl"
+        self.save_path += f"_{dataset.name}"
         self.categories = list(dataset.category_label_num.keys())
         self.category_seed_words = dataset.category_seed_words
         self.w2v_model = dataset.w2v_model
         self.sentences = dataset.sentences
-        if os.path.exists(self.save_path):
-            print("Model exists, loading ...")
-            self.load()
-            return
 
         self.similarity_index = WordEmbeddingSimilarityIndex(self.w2v_model)
         print("Building similarity matrix ...")
@@ -63,8 +62,6 @@ class UnsupervisedACD:
         # get cluster similarity score with categories
         self.get_cluster_category_score()
 
-        self.save()
-
     def sentence_embedd_average(self, sentence):
         '''
         Get the average word embedding of a sentence
@@ -84,7 +81,8 @@ class UnsupervisedACD:
         print("Clustering ...")
         self.kmeans = KMeans(n_clusters=self.num_clusters,
                              max_iter=self.max_iter,
-                             random_state=0).fit(self.embedded)
+                             random_state=0,
+                             n_init="auto").fit(self.embedded)
         self.cluster_indexes = self.kmeans.labels_
         self.centroids = self.kmeans.cluster_centers_
 
@@ -134,7 +132,7 @@ class UnsupervisedACD:
                 if centroid_idx == cluster_index
             ]
             # similarity of this cluster to each category
-            cluster_scores = np.array([])
+            cluster_scores = []
             for category in self.categories:
                 cluster_score = np.mean([
                     self.get_sentence_category_similarity(
@@ -144,12 +142,7 @@ class UnsupervisedACD:
                                         axis=0)
                 cluster_score = sigmoid(cluster_score)
                 cluster_scores.append(cluster_score)
-
-            # cluster_scores = np.mean([
-            #     self.get_sentence_category_scores(sentence)
-            #     for sentence in cluster_sentences
-            # ],
-            #                          axis=0)
+            cluster_scores = np.array(cluster_scores)
             print(cluster_scores)
             self.cluster_category_similarity.append(cluster_scores)
 
@@ -172,18 +165,16 @@ class UnsupervisedACD:
         scores = (1 - alpha) * cluster_scores + alpha * sentence_scores
         return scores, sentence_scores, cluster_scores
 
-    def predict(self, sentence, is_processed, alpha=0.5):
+    def predict(self, sentence, is_processed=False, alpha=0.5):
         '''
         Predict the categories of a sentence
         '''
-        print(sentence)
-        scores, sentence_scores, cluster_scores = self.get_test_sentence_scores(
-            sentence, alpha=alpha, is_processed=is_processed)
-        #print scores, sentence_scores, cluster_scores
-        print("Predicted scores:", scores)
-        print("Predicted sentence scores:", sentence_scores)
-        print("Predicted cluster scores:", cluster_scores)
-        print("Predicted labels:", self.categories[np.argmax(scores)])
+        if hasattr(self, 'alpha'):
+            alpha = self.alpha
+        scores = self.get_test_sentence_scores(sentence,
+                                               alpha=alpha,
+                                               is_processed=is_processed)[0]
+        return scores
 
     def validate(self, dataset):
         print("Validating ...")
@@ -215,23 +206,16 @@ class UnsupervisedACD:
                 self.alpha = alpha
 
             print(f"Alpha: {alpha} - Result: {res}")
+        self.save_path += f"_{dataset.name}.pkl"
 
-    def save(self):
-        state_dict = {
-            "similarity_matrix": self.similarity_matrix,
-            "kmeans": self.kmeans,
-            "cluster_score": self.cluster_category_similarity
-        }
+    def save(save_path, model):
+        with open(save_path, 'wb') as f:
+            pickle.dump(model, f)
 
-        with open(self.save_path, 'wb') as f:
-            pickle.dump(state_dict, f)
-
-    def load(self):
-        with open(self.save_path, 'rb') as f:
-            state_dict = pickle.load(f)
-        self.similarity_matrix = state_dict["similarity_matrix"]
-        self.kmeans = state_dict["kmeans"]
-        self.cluster_category_similarity = state_dict["cluster_score"]
+    def load(save_path):
+        with open(save_path, 'rb') as f:
+            model = pickle.load(f)
+        return model
 
     def evaluate(self, dataset):
         '''
@@ -239,11 +223,14 @@ class UnsupervisedACD:
         '''
         print("Predicting ...")
         self.results = {"predict": [], "true": []}
+        if hasattr(self, 'alpha'):
+            alpha = self.alpha
         for idx in tqdm(range(len(dataset))):
             sentence = dataset.sentences[idx]
             scores, _, _ = self.get_test_sentence_scores(sentence,
-                                                         alpha=self.alpha,
+                                                         alpha=alpha,
                                                          is_processed=False)
+            label = dataset.labels[idx]
             label = dataset.labels[idx]
             self.results["predict"].append(np.argmax(scores))
             self.results["true"].append(label)

@@ -31,9 +31,9 @@ class Dataset():
         return len(self.sentences)
 
     def get_w2v_model(self, size=300):
-        path = f"save/{self.name}_w2v_{size}.bin"
-        if not os.path.exists("save"):
-            os.mkdir("save")
+        path = f"embedding/{self.name}_w2v_{size}.bin"
+        if not os.path.exists("embedding"):
+            os.mkdir("embedding")
         try:
             print("\tLoading word2vec model...")
             wv = KeyedVectors.load_word2vec_format(path, binary=True)
