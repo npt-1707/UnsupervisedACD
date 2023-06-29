@@ -69,7 +69,7 @@ class UnsupervisedACD:
         return np.mean(
             [
                 self.w2v_model[word]
-                for word in sentence if word in self.w2v_model
+                for word in sentence.split() if word in self.w2v_model
             ],
             axis=0,
         )
