@@ -124,7 +124,7 @@ class UnsupervisedACD:
         print("Getting cluster similarity score with categories ...")
         self.cluster_category_similarity = []
         for cluster_index in range(len(self.centroids)):
-            print(f"Cluster {cluster_index} ...", end="")
+            # print(f"Cluster {cluster_index} ...", end="")
             # sentences in this cluster
             cluster_sentences = [
                 self.sentences[i]
@@ -143,7 +143,7 @@ class UnsupervisedACD:
                 cluster_score = sigmoid(cluster_score)
                 cluster_scores.append(cluster_score)
             cluster_scores = np.array(cluster_scores)
-            print(cluster_scores)
+            # print(cluster_scores)
             self.cluster_category_similarity.append(cluster_scores)
 
     def get_test_sentence_scores(self,
@@ -205,8 +205,9 @@ class UnsupervisedACD:
                 best_res = res
                 self.alpha = alpha
 
-            print(f"Alpha: {alpha} - Result: {res}")
+        print(f"Alpha: {self.alpha} - Result: {best_res}")
         self.save_path += f"_{dataset.name}.pkl"
+        return best_res[0]
 
     def save(save_path, model):
         with open(save_path, 'wb') as f:
@@ -239,3 +240,5 @@ class UnsupervisedACD:
             classification_report(self.results["true"],
                                   self.results["predict"],
                                   target_names=self.categories))
+        return f1_score(self.results["true"], self.results["predict"],
+                        average='macro')

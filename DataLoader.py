@@ -39,7 +39,7 @@ class Dataset():
             wv = KeyedVectors.load_word2vec_format(path, binary=True)
         except:
             print("\tTraining word2vec model...")
-            w2v_model = Word2Vec(self.sentences,
+            w2v_model = Word2Vec([sen.split() for sen in self.sentences],
                                  vector_size=size,
                                  epochs=10,
                                  alpha=0.01,
