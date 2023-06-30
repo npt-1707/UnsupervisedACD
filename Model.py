@@ -165,12 +165,15 @@ class UnsupervisedACD:
         scores = (1 - alpha) * cluster_scores + alpha * sentence_scores
         return scores, sentence_scores, cluster_scores
 
-    def predict(self, sentence, is_processed=False, alpha=0.5):
+    def predict(self, sentence, is_processed=False, alpha=None):
         '''
         Predict the categories of a sentence
         '''
-        if hasattr(self, 'alpha'):
-            alpha = self.alpha
+        if alpha is None:
+            if hasattr(self, 'alpha'):
+                alpha = self.alpha
+            else:
+                alpha = 0.5
         scores = self.get_test_sentence_scores(sentence,
                                                alpha=alpha,
                                                is_processed=is_processed)[0]
@@ -203,11 +206,11 @@ class UnsupervisedACD:
             ]
             if res[0] > best_res[0]:
                 best_res = res
-                self.alpha = alpha
+                self.alpha = alpha / 10
 
         print(f"Alpha: {self.alpha} - Result: {best_res}")
         self.save_path += f"_{dataset.name}.pkl"
-        return best_res[0]
+        return best_res
 
     def save(save_path, model):
         with open(save_path, 'wb') as f:
@@ -240,5 +243,14 @@ class UnsupervisedACD:
             classification_report(self.results["true"],
                                   self.results["predict"],
                                   target_names=self.categories))
-        return f1_score(self.results["true"], self.results["predict"],
-                        average='macro')
+        return [
+            f1_score(self.results["true"],
+                     self.results["predict"],
+                     average='macro'),
+            precision_score(self.results["true"],
+                            self.results["predict"],
+                            average='macro'),
+            recall_score(self.results["true"],
+                         self.results["predict"],
+                         average='macro')
+        ]
